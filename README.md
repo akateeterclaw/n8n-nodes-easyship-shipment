@@ -26,6 +26,12 @@ The Easyship JSON response is returned in `json`. With **Create PDF Label** enab
 
 Easyship charges the account and books the courier when a label is purchased. Leave **Create PDF Label** disabled while first validating address, customs, and courier settings.
 
+## Incomplete addresses
+
+By default, missing or invalid sender/recipient address data does not call Easyship. The node returns an `easyshipDraft` object containing the original input, validation issues, and proposed request. Route these items to an n8n Data Store, database, or review workflow if they need durable storage.
+
+Easyship's public API does not document an operation that guarantees saving an incomplete shipment as a remote Easyship draft. Choose **Stop With Error** if incomplete records should fail instead.
+
 ## API behavior
 
 This node targets Easyship API `2024-09` and sends:
