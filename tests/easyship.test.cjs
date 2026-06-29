@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
 	buildShipmentBody,
 	findPdfLabelDocuments,
+	getAddressValidationIssues,
 } = require('../dist/nodes/Easyship/GenericFunctions.js');
 
 const address = {
@@ -57,4 +58,29 @@ test('finds only PDF label documents', () => {
 
 	assert.equal(documents.length, 1);
 	assert.deepEqual(documents[0].base64_encoded_strings, ['JVBERg==']);
+});
+
+test('reports incomplete recipient data before an API request is made', () => {
+	const issues = getAddressValidationIssues(
+		{
+			...address,
+			line_1: '',
+			postal_code: '',
+			contact_phone: '',
+			contact_email: '',
+		},
+		'recipient',
+	);
+
+	assert.deepEqual(issues, [
+		'recipient.line_1 is missing',
+		'recipient.postal_code is missing',
+		'recipient.contact_phone is missing',
+		'recipient.contact_email is missing',
+	]);
+});
+
+test('requires a state for countries where Easyship mandates one', () => {
+	const issues = getAddressValidationIssues({ ...address, state: '' }, 'sender');
+	assert.deepEqual(issues, ['sender.state is missing for US']);
 });
