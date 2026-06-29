@@ -9,21 +9,18 @@ const addressFields = [
         name: 'contact_name',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'Company Name',
         name: 'company_name',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'Address Line 1',
         name: 'line_1',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'Address Line 2',
@@ -36,7 +33,6 @@ const addressFields = [
         name: 'city',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'State / Province',
@@ -50,14 +46,12 @@ const addressFields = [
         name: 'postal_code',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'Country Code',
         name: 'country_alpha2',
         type: 'string',
         default: 'US',
-        required: true,
         description: 'Two-letter ISO 3166-1 country code',
     },
     {
@@ -65,7 +59,6 @@ const addressFields = [
         name: 'contact_phone',
         type: 'string',
         default: '',
-        required: true,
     },
     {
         displayName: 'Email',
@@ -73,9 +66,13 @@ const addressFields = [
         type: 'string',
         default: '',
         placeholder: 'name@example.com',
-        required: true,
     },
 ];
+function getAddressCollection(executeFunctions, name, itemIndex) {
+    var _a;
+    const collection = executeFunctions.getNodeParameter(name, itemIndex);
+    return (_a = collection.values) !== null && _a !== void 0 ? _a : {};
+}
 function getSingleCollection(executeFunctions, name, itemIndex) {
     const collection = executeFunctions.getNodeParameter(name, itemIndex);
     if (!collection.values) {
@@ -116,6 +113,25 @@ class Easyship {
                     required: true,
                     typeOptions: { multipleValues: false },
                     options: [{ displayName: 'Address', name: 'values', values: addressFields }],
+                },
+                {
+                    displayName: 'Incomplete Address Behavior',
+                    name: 'incompleteAddressBehavior',
+                    type: 'options',
+                    options: [
+                        {
+                            name: 'Return Draft Item',
+                            value: 'draft',
+                            description: 'Do not call Easyship; return the data and validation issues to n8n as a draft item',
+                        },
+                        {
+                            name: 'Stop With Error',
+                            value: 'error',
+                            description: 'Stop execution and list the missing or invalid fields',
+                        },
+                    ],
+                    default: 'draft',
+                    description: 'Easyship does not document an API operation for saving remote drafts. Draft items remain in n8n and can be routed to a database or another workflow.',
                 },
                 {
                     displayName: 'Package',
@@ -208,8 +224,8 @@ class Easyship {
             : 'https://public-api-sandbox.easyship.com';
         for (let itemIndex = 0; itemIndex < inputItems.length; itemIndex++) {
             try {
-                const sender = getSingleCollection(this, 'senderAddress', itemIndex);
-                const recipient = getSingleCollection(this, 'recipientAddress', itemIndex);
+                const sender = getAddressCollection(this, 'senderAddress', itemIndex);
+                const recipient = getAddressCollection(this, 'recipientAddress', itemIndex);
                 const packageValues = getSingleCollection(this, 'package', itemIndex);
                 const contents = getSingleCollection(this, 'contents', itemIndex);
                 const createLabel = this.getNodeParameter('createLabel', itemIndex, true);
@@ -232,6 +248,30 @@ class Easyship {
                     createLabel,
                     labelSize: this.getNodeParameter('labelSize', itemIndex, '4x6'),
                 };
+                const addressIssues = [
+                    ...(0, GenericFunctions_1.getAddressValidationIssues)(sender, 'sender'),
+                    ...(0, GenericFunctions_1.getAddressValidationIssues)(recipient, 'recipient'),
+                ];
+                if (addressIssues.length > 0) {
+                    const incompleteAddressBehavior = this.getNodeParameter('incompleteAddressBehavior', itemIndex, 'draft');
+                    if (incompleteAddressBehavior === 'error') {
+                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Shipment address is incomplete: ${addressIssues.join('; ')}`, { itemIndex });
+                    }
+                    outputItems.push({
+                        json: {
+                            ...inputItems[itemIndex].json,
+                            easyshipDraft: {
+                                status: 'draft',
+                                savedToEasyship: false,
+                                reason: 'incomplete_address',
+                                issues: addressIssues,
+                                proposedRequest: (0, GenericFunctions_1.buildShipmentBody)({ ...parameters, createLabel: false }),
+                            },
+                        },
+                        pairedItem: { item: itemIndex },
+                    });
+                    continue;
+                }
                 const options = {
                     method: 'POST',
                     url: `${baseUrl}/2024-09/shipments`,
@@ -268,7 +308,7 @@ class Easyship {
                     });
                     continue;
                 }
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), error, { itemIndex });
+                throw new n8n_workflow_1.NodeApiError(this.getNode(), error, { itemIndex });
             }
         }
         return [outputItems];
