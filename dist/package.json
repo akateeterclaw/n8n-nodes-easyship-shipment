@@ -1,6 +1,6 @@
 {
     "name": "n8n-nodes-easyship-shipment",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "An n8n community node for creating Easyship shipments and returning PDF labels",
     "author": {
         "name": "Jeremy Teeter",
