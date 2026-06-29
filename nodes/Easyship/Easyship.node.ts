@@ -1,14 +1,16 @@
 import type {
 	IExecuteFunctions,
 	IHttpRequestOptions,
+	JsonObject,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import {
 	buildShipmentBody,
 	findPdfLabelDocuments,
+	getAddressValidationIssues,
 	type EasyshipAddress,
 	type ShipmentParameters,
 } from './GenericFunctions';
@@ -19,21 +21,18 @@ const addressFields = [
 		name: 'contact_name',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'Company Name',
 		name: 'company_name',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'Address Line 1',
 		name: 'line_1',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'Address Line 2',
@@ -46,7 +45,6 @@ const addressFields = [
 		name: 'city',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'State / Province',
@@ -60,14 +58,12 @@ const addressFields = [
 		name: 'postal_code',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'Country Code',
 		name: 'country_alpha2',
 		type: 'string' as const,
 		default: 'US',
-		required: true,
 		description: 'Two-letter ISO 3166-1 country code',
 	},
 	{
@@ -75,7 +71,6 @@ const addressFields = [
 		name: 'contact_phone',
 		type: 'string' as const,
 		default: '',
-		required: true,
 	},
 	{
 		displayName: 'Email',
@@ -83,9 +78,19 @@ const addressFields = [
 		type: 'string' as const,
 		default: '',
 		placeholder: 'name@example.com',
-		required: true,
 	},
 ];
+
+function getAddressCollection(
+	executeFunctions: IExecuteFunctions,
+	name: string,
+	itemIndex: number,
+): EasyshipAddress {
+	const collection = executeFunctions.getNodeParameter(name, itemIndex) as {
+		values?: EasyshipAddress;
+	};
+	return collection.values ?? {};
+}
 
 function getSingleCollection<T>(
 	executeFunctions: IExecuteFunctions,
@@ -133,6 +138,27 @@ export class Easyship implements INodeType {
 				required: true,
 				typeOptions: { multipleValues: false },
 				options: [{ displayName: 'Address', name: 'values', values: addressFields }],
+			},
+			{
+				displayName: 'Incomplete Address Behavior',
+				name: 'incompleteAddressBehavior',
+				type: 'options',
+				options: [
+					{
+						name: 'Return Draft Item',
+						value: 'draft',
+						description:
+							'Do not call Easyship; return the data and validation issues to n8n as a draft item',
+					},
+					{
+						name: 'Stop With Error',
+						value: 'error',
+						description: 'Stop execution and list the missing or invalid fields',
+					},
+				],
+				default: 'draft',
+				description:
+					'Easyship does not document an API operation for saving remote drafts. Draft items remain in n8n and can be routed to a database or another workflow.',
 			},
 			{
 				displayName: 'Package',
@@ -227,8 +253,8 @@ export class Easyship implements INodeType {
 
 		for (let itemIndex = 0; itemIndex < inputItems.length; itemIndex++) {
 			try {
-				const sender = getSingleCollection<EasyshipAddress>(this, 'senderAddress', itemIndex);
-				const recipient = getSingleCollection<EasyshipAddress>(this, 'recipientAddress', itemIndex);
+				const sender = getAddressCollection(this, 'senderAddress', itemIndex);
+				const recipient = getAddressCollection(this, 'recipientAddress', itemIndex);
 				const packageValues = getSingleCollection<Record<string, number>>(this, 'package', itemIndex);
 				const contents = getSingleCollection<Record<string, string | number>>(this, 'contents', itemIndex);
 				const createLabel = this.getNodeParameter('createLabel', itemIndex, true) as boolean;
@@ -251,6 +277,40 @@ export class Easyship implements INodeType {
 					createLabel,
 					labelSize: this.getNodeParameter('labelSize', itemIndex, '4x6') as string,
 				};
+				const addressIssues = [
+					...getAddressValidationIssues(sender, 'sender'),
+					...getAddressValidationIssues(recipient, 'recipient'),
+				];
+
+				if (addressIssues.length > 0) {
+					const incompleteAddressBehavior = this.getNodeParameter(
+						'incompleteAddressBehavior',
+						itemIndex,
+						'draft',
+					) as string;
+					if (incompleteAddressBehavior === 'error') {
+						throw new NodeOperationError(
+							this.getNode(),
+							`Shipment address is incomplete: ${addressIssues.join('; ')}`,
+							{ itemIndex },
+						);
+					}
+
+					outputItems.push({
+						json: {
+							...inputItems[itemIndex].json,
+							easyshipDraft: {
+								status: 'draft',
+								savedToEasyship: false,
+								reason: 'incomplete_address',
+								issues: addressIssues,
+								proposedRequest: buildShipmentBody({ ...parameters, createLabel: false }),
+							},
+						},
+						pairedItem: { item: itemIndex },
+					});
+					continue;
+				}
 
 				const options: IHttpRequestOptions = {
 					method: 'POST',
@@ -309,7 +369,7 @@ export class Easyship implements INodeType {
 					});
 					continue;
 				}
-				throw new NodeOperationError(this.getNode(), error as Error, { itemIndex });
+				throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex });
 			}
 		}
 
